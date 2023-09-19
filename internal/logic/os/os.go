@@ -29,7 +29,7 @@ func (receiver *sOs) Run(ctx context.Context, arg string, workSpace string) erro
 		return err
 	}
 	receiver.manager.AddProcess(pid)
-	g.Log().Infof(ctx, `Run the command "%s" in the "%s" directory with Pid %s.`, cmd.String(), workSpace, pid)
+	g.Log().Infof(ctx, `Run the command "%s" in the "%s" directory with Pid %d.`, cmd.String(), workSpace, pid)
 	err = cmd.Wait()
 	receiver.manager.RemoveProcess(pid)
 	if err != nil {
