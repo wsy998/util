@@ -1,201 +1,60 @@
 package main
 
 import (
-	"context"
-	"fmt"
+	"os"
+
 	"github.com/gogf/gf/v2/encoding/gjson"
+	"github.com/gogf/gf/v2/frame/g"
 	"github.com/gogf/gf/v2/os/gctx"
 	"github.com/gogf/gf/v2/os/gfile"
-	"github.com/gogf/gf/v2/os/gproc"
-	"github.com/gogf/gf/v2/text/gstr"
-	"os"
+
+	"util/internal/cmd"
+	_ "util/internal/logic"
+	"util/internal/model"
+	"util/internal/service"
 )
 
 func main() {
-	var json *gjson.Json
-	if gfile.Exists(".config.json") {
-		bytes := gfile.GetBytes(".config.json")
-		var err error
-		json, err = gjson.DecodeToJson(bytes)
+	ctx := gctx.GetInitCtx()
+	defer func() {
+
+		err := service.Os().KillAll()
 		if err != nil {
+			g.Log().Fatal(ctx, err)
+		}
+		if e := recover(); e != nil {
+			if err, ok := e.(error); ok {
+				g.Log().Fatal(ctx, err)
+			}
+		}
+	}()
+	var config *model.TypeConfig
+	configPath := gfile.Join(gfile.Pwd(), ".de-config.json")
+	if gfile.Exists(configPath) {
+		if json, err := gjson.DecodeToJson(gfile.GetBytes(configPath)); err != nil {
 			panic(err)
+		} else {
+			if err := json.Scan(&config); err != nil {
+				panic(err)
+			}
 		}
 	} else {
-		json = gjson.New(nil)
+		config = new(model.TypeConfig)
 	}
-
-	ctx := gctx.GetInitCtx()
-	frontendPath := json.Get("frontend.path", "frontend").String()
-	frontendInstall := json.Get("frontend.install", "pnpm install").String()
-	frontendDev := json.Get("frontend.dev", "pnpm dev").String()
-	frontendBuild := json.Get("frontend.build", "pnpm build").String()
-	frontBuildPath := json.Get("frontend.buildPath", "").String()
-	port := json.Get("front.port", 5173).Int()
-	backendPath := json.Get("backend.path", ".").String()
-	backendRun := json.Get("backend.dev", "go run main.go").String()
-	backendBuild := json.Get("backend.build", "go build main.go").String()
-	backendBuildPath := json.Get("backend.buildPath", "").String()
-	backendOutName := json.Get("backend.outName", "main").String()
+	var err error
 	switch os.Args[1] {
 	case "dev":
-		errs := make(chan error, 100)
-		q := make(chan int, 100)
-		exit := make(chan int, 100)
-
-		runGO(ctx, backendPath, backendRun, exit, errs, q)
-
-		runFrontend(ctx, frontendPath, frontendInstall, frontendDev, exit, errs, q, port)
-		go func() {
-			err := <-errs
-			fmt.Println(err)
-		}()
-		go func() {
-			o := <-q
-			exit <- o
-			exit <- o
-			exit <- o
-		}()
-		gproc.AddSigHandlerShutdown(func(sig os.Signal) {
-			exit <- 0
-		})
-		gproc.Listen()
+		err = cmd.RunDev(ctx, config)
 	case "build":
-		if err := buildGo(ctx, backendPath, backendBuild, backendBuildPath, backendOutName); err != nil {
-			panic(err)
-		}
-		if err := buildFrontend(ctx, frontendPath, frontendInstall, frontendBuild, frontBuildPath); err != nil {
-			panic(err)
-		}
+		err = cmd.RunBuild(ctx, config)
+	case "go":
+		err = cmd.RunGo(ctx, config)
+	case "fe":
+		err = cmd.RunFe(ctx, config)
+	default:
+		err = cmd.RunAlias(ctx, config)
 	}
-
-}
-
-func buildGo(ctx context.Context, backendPath string, build string, path string, outName string) error {
-	cmd := gproc.NewProcessCmd("go mod tidy")
-	cmd.Dir = backendPath
-	err := cmd.Run(ctx)
 	if err != nil {
-		return err
+		panic(err)
 	}
-	s := ""
-
-	if path != "" {
-		if gstr.HasSuffix(path, "/") || gstr.HasSuffix(path, "\\") {
-			p := gfile.Join(gfile.Pwd(), path)
-			os.MkdirAll(p, os.ModePerm)
-			s = fmt.Sprintf(" -o %s", gfile.Join(p, outName))
-		} else {
-			p := gfile.Join(gfile.Pwd(), gfile.Dir(path))
-			os.MkdirAll(p, os.ModePerm)
-			s = fmt.Sprintf(" -o %s", gfile.Join(gfile.Pwd(), path))
-		}
-	} else {
-		s = fmt.Sprintf(" -o %s", outName)
-	}
-	processCmd := gproc.NewProcessCmd(build + s)
-	processCmd.Dir = backendPath
-	err = processCmd.Run(ctx)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-func buildFrontend(ctx context.Context, frontendPath, install, build, path string) error {
-
-	cmd := gproc.NewProcessCmd(install)
-	cmd.Dir = frontendPath
-	err := cmd.Run(ctx)
-	if err != nil {
-		return err
-	}
-	s := ""
-	if path != "" {
-		s = fmt.Sprintf(" --outDir %s", gfile.Join(gfile.Pwd(), path, "frontend"))
-	}
-	processCmd := gproc.NewProcessCmd(build + s)
-	processCmd.Dir = frontendPath
-	err = processCmd.Run(ctx)
-	if err != nil {
-		return err
-	}
-	return nil
-}
-func runGO(ctx context.Context, backendPath, backendRun string, exitSign chan int, errChan chan error, pexit chan int) {
-	go func() {
-		defer func() {
-			if err := recover(); err != nil {
-				if e, ok := err.(error); ok {
-					errChan <- e
-
-				}
-			}
-		}()
-		cmd := gproc.NewProcessCmd("go mod tidy")
-		cmd.Dir = backendPath
-		err := cmd.Run(ctx)
-		if err != nil {
-			panic(err)
-		}
-		processCmd := gproc.NewProcessCmd(backendRun)
-		processCmd.Dir = backendPath
-		_, err = processCmd.Start(ctx)
-		if err != nil {
-			panic(err)
-		}
-		go func() {
-			o := <-exitSign
-			if o == 0 || o == 2 {
-				err := cmd.Kill()
-				if err != nil {
-					errChan <- err
-				}
-			}
-
-		}()
-		err = processCmd.Wait()
-		pexit <- 1
-
-		if err != nil {
-			panic(err)
-		}
-	}()
-}
-func runFrontend(ctx context.Context, frontendPath, frontendInstall, frontendDev string, exitSign chan int, errChan chan error, pexit chan int, port int) {
-	go func() {
-		defer func() {
-			if err := recover(); err != nil {
-				if e, ok := err.(error); ok {
-					errChan <- e
-
-				}
-			}
-		}()
-		cmd := gproc.NewProcessCmd(frontendInstall)
-		cmd.Dir = frontendPath
-		err := cmd.Run(ctx)
-		if err != nil {
-			panic(err)
-		}
-		processCmd := gproc.NewProcessCmd(frontendDev + fmt.Sprintf(" --port %d --strictPort", port))
-		processCmd.Dir = frontendPath
-		_, err = processCmd.Start(ctx)
-		if err != nil {
-			panic(err)
-		}
-		go func() {
-			o := <-exitSign
-			if o == 0 || o == 2 {
-				err := cmd.Kill()
-				if err != nil {
-					errChan <- err
-				}
-			}
-		}()
-		err = processCmd.Wait()
-		pexit <- 2
-		if err != nil {
-			panic(err)
-		}
-
-	}()
 }
